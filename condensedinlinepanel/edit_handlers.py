@@ -1,17 +1,46 @@
 from __future__ import absolute_import, unicode_literals
+
+import datetime
+import json
 import six
 
-import json
 import django
 from django import forms
+from django.conf import settings
+from django.core.serializers.json import DjangoJSONEncoder
 from django.utils.translation import ugettext_lazy as _
 
 from modelcluster.forms import BaseChildFormSet
 
-from wagtail.wagtailadmin.edit_handlers import BaseInlinePanel
-from wagtail.wagtailcore.models import Page
-from wagtail.wagtailimages.models import AbstractImage
-from wagtail.wagtaildocs.models import Document
+import wagtail.VERSION
+
+if wagtail.VERSION >= (2, 0):
+    from wagtail.admin.edit_handlers import BaseInlinePanel
+    from wagtail.admin.widgets import DEFAULT_DATE_FORMAT, DEFAULT_DATETIME_FORMAT
+    from wagtail.core.models import Page
+    from wagtail.images.models import AbstractImage
+    from wagtail.documents.models import Document
+else:
+    from wagtail.wagtailadmin.edit_handlers import BaseInlinePanel
+    from wagtail.wagtailadmin.widgets import DEFAULT_DATE_FORMAT, DEFAULT_DATETIME_FORMAT
+    from wagtail.wagtailcore.models import Page
+    from wagtail.wagtailimages.models import AbstractImage
+    from wagtail.wagtaildocs.models import Document
+
+
+class WagtailJSONEncoder(DjangoJSONEncoder):
+    def default(self, o):
+        # Don't include seconds in times
+        if isinstance(o, datetime.datetime):
+            fmt = getattr(settings, 'WAGTAIL_DATETIME_FORMAT', DEFAULT_DATETIME_FORMAT)
+            return o.strftime(fmt)
+        if isinstance(o, datetime.date):
+            fmt = getattr(settings, 'WAGTAIL_DATE_FORMAT', DEFAULT_DATE_FORMAT)
+            return o.strftime(fmt)
+        elif isinstance(o, datetime.time):
+            return o.strftime('%H:%M')
+        else:
+            return super(WagtailJSONEncoder, self).default(o)
 
 
 class BaseCondensedInlinePanelFormSet(BaseChildFormSet):
@@ -35,8 +64,14 @@ class BaseCondensedInlinePanelFormSet(BaseChildFormSet):
             data_json = json.loads(new_data[prefix])
 
             for form_id, form in enumerate(data_json['forms']):
-                for field_name, field_value in form['fields'].items():
-                    new_data.setdefault(prefix + '-' + str(form_id) + '-' + field_name, field_value)
+                # For forms that weren't expanded, add their data to the request manually.
+                # Note: Even though we're using setdefault, we need to check that the form
+                # was submitted so checkbox fields can be unchecked (because they don't
+                # submit anything in their unchecked state, setdefault may inadvertantly
+                # recheck them)
+                if prefix + '-' + str(form_id) + '-id' not in new_data:
+                    for field_name, field_value in form['fields'].items():
+                        new_data.setdefault(prefix + '-' + str(form_id) + '-' + field_name, field_value)
 
             delete_json = json.loads(new_data[prefix + '-DELETE'])
             for form_id in delete_json:
@@ -132,7 +167,7 @@ class BaseCondensedInlinePanelFormSet(BaseChildFormSet):
                     for field_name in self.empty_form.fields.keys()
                 }
             }
-        })
+        }, cls=WagtailJSONEncoder)
 
 
 class BaseCondensedInlinePanel(BaseInlinePanel):
